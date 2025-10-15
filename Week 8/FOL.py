@@ -1,145 +1,149 @@
-import re
+# -*- coding: utf-8 -*-
+from copy import deepcopy
+import networkx as nx
+import matplotlib.pyplot as plt
 
-class KnowledgeBase:
-    def __init__(self):
-        self.facts = set()
-        self.rules = []
+# -----------------------------------------------------
+# Knowledge Base (KB)
+# -----------------------------------------------------
+KB = [
+    {"if": ["American(p)", "Weapon(q)", "Sells(p, q, r)", "Hostile(r)"], "then": "Criminal(p)"},
+    {"if": ["Missile(x)"], "then": "Weapon(x)"},
+    {"if": ["Enemy(x, America)"], "then": "Hostile(x)"},
+    {"if": ["Missile(x)", "Owns(A, x)"], "then": "Sells(Robert, x, A)"},
+    {"fact": "American(Robert)"},
+    {"fact": "Enemy(A, America)"},
+    {"fact": "Missile(T1)"},
+    {"fact": "Owns(A, T1)"}
+]
 
-    def add_fact(self, fact):
-        self.facts.add(fact)
+goal = "Criminal(Robert)"
 
-    def add_rule(self, head, body, label=None):
-        self.rules.append({"head": head, "body": body, "label": label})
 
-def substitute(expr, subs):
-    for var, val in subs.items():
-        expr = re.sub(r'\b' + var + r'\b', val, expr)
-    return expr
+# -----------------------------------------------------
+# Helper functions
+# -----------------------------------------------------
+def parse_predicate(expr):
+    pred, args_str = expr.split("(")
+    args = args_str[:-1].split(",")
+    return pred.strip(), [a.strip() for a in args]
 
-def extract_predicate(expr):
-    m = re.match(r'(\w+)\(([^()]*)\)', expr)
-    if not m:
-        return None, []
-    pred, args = m.groups()
-    args = [a.strip() for a in args.split(',') if a.strip()]
-    return pred, args
 
-def unify(pattern, fact):
-    p_pred, p_args = extract_predicate(pattern)
-    f_pred, f_args = extract_predicate(fact)
-    if p_pred != f_pred or len(p_args) != len(f_args):
+def is_variable(term):
+    return term[0].islower()
+
+
+def unify(expr1, expr2, subs=None):
+    """Unify two predicates expr1 and expr2."""
+    if subs is None:
+        subs = {}
+    p1, args1 = parse_predicate(expr1)
+    p2, args2 = parse_predicate(expr2)
+    if p1 != p2 or len(args1) != len(args2):
         return None
-    subs = {}
-    for pa, fa in zip(p_args, f_args):
-        # variables start lowercase
-        if pa[0].islower():
-            if pa in subs:
-                if subs[pa] != fa:
-                    return None
-            else:
-                subs[pa] = fa
-        elif pa != fa:
+    for t1, t2 in zip(args1, args2):
+        if t1 == t2:
+            continue
+        elif is_variable(t1):
+            subs[t1] = t2
+        elif is_variable(t2):
+            subs[t2] = t1
+        else:
             return None
     return subs
 
-def forward_chain(kb, query):
-    derived = True
-    steps = []
-    while derived:
-        derived = False
-        for rule in kb.rules:
-            body = rule["body"]
-            head = rule["head"]
-            label = rule["label"]
 
-            matches = [{}]  # start with empty substitution
-            for cond in body:
-                new_matches = []
-                for m in matches:
-                    for fact in kb.facts:
-                        subs = unify(cond, substitute(fact, m))
-                        if subs is not None:
-                            combined = {**m, **subs}
-                            # Check consistency:
-                            consistent = True
-                            for k in combined:
-                                if k in m and m[k] != combined[k]:
-                                    consistent = False
-                                    break
-                            if consistent:
-                                new_matches.append(combined)
-                matches = new_matches
+def substitute(expr, subs):
+    pred, args = parse_predicate(expr)
+    new_args = []
+    for a in args:
+        while a in subs:
+            a = subs[a]
+        new_args.append(a)
+    return f"{pred}({', '.join(new_args)})"
 
-            for subs in matches:
-                new_fact = substitute(head, subs)
-                if new_fact not in kb.facts:
-                    kb.facts.add(new_fact)
-                    derived = True
-                    steps.append({
-                        "rule": label,
-                        "substitution": subs,
-                        "premises": [substitute(c, subs) for c in body],
-                        "derived": new_fact
-                    })
-                    print(f"Derived: {new_fact} by rule {label} with substitution {subs}")
-    return steps
 
-def print_proof(query, steps):
-    derived_by = {step["derived"]: step for step in steps}
+# -----------------------------------------------------
+# Forward Chaining Algorithm + Graph Recording
+# -----------------------------------------------------
+def FOL_FC_ASK(KB, query):
+    known_facts = {item["fact"] for item in KB if "fact" in item}
+    rules = [item for item in KB if "if" in item]
+    inference_edges = []
 
-    def print_tree(goal, indent=""):
-        if goal not in derived_by:
-            print(f"{indent}- {goal}  [assumed]")
-        else:
-            step = derived_by[goal]
-            print(f"{indent}- {goal}  [derived by: {step['rule']}]")
-            for p in step["premises"]:
-                print_tree(p, indent + "  ")
+    print("Initial known facts:")
+    for f in known_facts:
+        print("  ", f)
+    print()
 
-    print(f"\nProof tree for query '{query}':")
-    print_tree(query)
+    new_facts_added = True
 
-# -------------------------
-# Create knowledge base
-# -------------------------
-kb = KnowledgeBase()
+    while new_facts_added:
+        new_facts_added = False
 
-# Add facts (constants capitalized)
-kb.add_fact("Owns(A, t1)")
-kb.add_fact("Missile(t1)")
-kb.add_fact("American(Robert)")
-kb.add_fact("Enemy(A, America)")
+        for rule in rules:
+            premises = rule["if"]
+            conclusion = rule["then"]
 
-# Add rules (variables lowercase)
-kb.add_rule("Criminal(p)", ["American(p)", "Weapon(q)", "Sells(p, q, r)", "Hostile(r)"], label="R_crime")
-kb.add_rule("Sells(Robert, x, A)", ["Missile(x)", "Owns(A, x)"], label="R_sells_by_robert")
-kb.add_rule("Weapon(x)", ["Missile(x)"], label="R_missile_weapon")
-kb.add_rule("Hostile(x)", ["Enemy(x, America)"], label="R_enemy_hostile")
+            substitutions_list = [{}]
 
-# Query to prove
-query = "Criminal(Robert)"
+            for premise in premises:
+                new_substitutions = []
+                for subs in substitutions_list:
+                    premise_substituted = substitute(premise, subs)
+                    for fact in known_facts:
+                        new_subs = unify(premise_substituted, fact, deepcopy(subs))
+                        if new_subs is not None:
+                            new_substitutions.append(new_subs)
+                substitutions_list = new_substitutions
+                if not substitutions_list:
+                    break
 
-# Run forward chaining
-print("Starting forward chaining...\n")
-steps = forward_chain(kb, query)
+            for subs in substitutions_list:
+                inferred_fact = substitute(conclusion, subs)
+                if inferred_fact not in known_facts:
+                    print(f"Inferred: {inferred_fact}")
+                    known_facts.add(inferred_fact)
+                    new_facts_added = True
 
-print("\n=== Knowledge Base Facts after Forward Chaining ===")
-for f in sorted(kb.facts):
-    print(" -", f)
+                    # record edges for graph
+                    for premise in premises:
+                        inference_edges.append((substitute(premise, subs), inferred_fact))
 
-print("\nDerivation steps:")
-for i, step in enumerate(steps, 1):
-    print(f"Step {i}: rule {step['rule']}")
-    print("  substitution:", step["substitution"])
-    print("  premises used:")
-    for p in step["premises"]:
-        print("   -", p)
-    print("  derived:", step["derived"], "\n")
+                    # stop if query is reached
+                    if unify(inferred_fact, query):
+                        print("\nQuery satisfied:", query)
+                        visualize_graph(inference_edges, query)
+                        return True
 
-print("=== Query Result ===")
-if query in kb.facts:
-    print(f"Query '{query}' is TRUE (derived)")
-else:
-    print(f"Query '{query}' could NOT be derived")
+    print("\nQuery cannot be proved.")
+    visualize_graph(inference_edges, query)
+    return False
 
-print_proof(query, steps)
+
+# -----------------------------------------------------
+# Visualization
+# -----------------------------------------------------
+def visualize_graph(edges, goal):
+    G = nx.DiGraph()
+    G.add_edges_from(edges)
+
+    plt.figure(figsize=(12, 7))
+    pos = nx.spring_layout(G, seed=42)
+
+    node_colors = ["lightgreen" if n == goal else "lightblue" for n in G.nodes()]
+    nx.draw(
+        G, pos, with_labels=True, node_color=node_colors,
+        node_size=2200, font_size=10, font_weight="bold",
+        arrows=True, arrowstyle="-|>", arrowsize=12
+    )
+
+    plt.title("Forward Chaining Inference Graph", fontsize=14, fontweight="bold")
+    plt.show()
+
+
+# -----------------------------------------------------
+# Run Program
+# -----------------------------------------------------
+print("\n--- Forward Chaining (FOL-FC-ASK) ---\n")
+FOL_FC_ASK(KB, goal)
